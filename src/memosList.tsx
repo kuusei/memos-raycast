@@ -1,53 +1,69 @@
-import { useEffect, useState } from "react";
-import { List, ActionPanel, Action, Icon, confirmAlert, Alert, showToast, Toast } from "@raycast/api";
-import { archiveMemo, deleteMemo, getAllMemos, getRequestUrl, restoreMemo } from "./api";
-import { MemoInfoResponse, ROW_STATUS, ROW_STATUS_KEY } from "./types";
+import { Action, ActionPanel, Alert, confirmAlert, Icon, LaunchProps, List, showToast, Toast } from "@raycast/api";
+import { useEffect, useMemo, useState } from "react";
+import { archiveMemo, deleteMemo, getAllMemos, getMe, getRequestUrl, restoreMemo } from "./api";
+import { MemoInfoResponse, ROW_STATUS } from "./types";
 
-export default function MemosListCommand(): JSX.Element {
-  const [searchText, setSearchText] = useState("");
-  const [rowStatus, setRowStatus] = useState<ROW_STATUS_KEY>(ROW_STATUS.NORMAL);
-  const { isLoading, data, revalidate } = getAllMemos(rowStatus);
-  const [filterList, setFilterList] = useState<MemoInfoResponse[]>([]);
+interface SearchArguments {
+  text: string;
+}
 
-  const rowStatusList: ROW_STATUS_KEY[] = [ROW_STATUS.NORMAL, ROW_STATUS.ARCHIVED];
-
-  const onRowStatusChange = (newValue: ROW_STATUS_KEY) => {
-    setRowStatus(newValue);
-    revalidate();
-  };
+export default function MemosListCommand(props: LaunchProps<{ arguments: SearchArguments }>): JSX.Element {
+  const [currentUserId, setCurrentUserId] = useState<number>();
+  const [state, setState] = useState(ROW_STATUS.NORMAL);
+  const { isLoading, data, revalidate, pagination } = getAllMemos(currentUserId, { state });
+  const { isLoading: isLoadingUser, data: user } = getMe();
+  const [searchText, setSearchText] = useState(props.arguments.text ?? "");
+  const [debouncedSearchText, setDebouncedSearchText] = useState(searchText);
 
   useEffect(() => {
-    const dataList = data?.data || data || [];
-    setFilterList(dataList.filter((item) => item.content.includes(searchText)) || []);
+    const handler = setTimeout(() => {
+      setDebouncedSearchText(searchText);
+    }, 300);
+
+    return () => {
+      clearTimeout(handler);
+    };
   }, [searchText]);
 
   useEffect(() => {
-    const dataList = data?.data || data || [];
-    setFilterList(dataList);
-  }, [data]);
+    if (!isLoadingUser && user.name) {
+      const userId = +user.name.split("/")[1];
+      setCurrentUserId(userId);
+    }
+  }, [isLoadingUser]);
+
+  useEffect(() => {
+    if (currentUserId) {
+      revalidate();
+    }
+  }, [currentUserId]);
 
   function getItemUrl(item: MemoInfoResponse) {
-    const url = getRequestUrl(`/m/${item.name || item.id}`);
+    const url = getRequestUrl(`/m/${item.uid}`);
 
     return url;
   }
 
   function getItemMarkdown(item: MemoInfoResponse) {
-    const { content, resourceList } = item;
+    const { content, resources } = item;
     let markdown = content;
 
-    resourceList.forEach((resource, index) => {
-      const resourceUrl = getRequestUrl(`/o/r/${resource.id}?thumbnail=1`);
-
-      if (index === 0) {
-        markdown += "\n\n";
-      }
-
-      markdown += ` ![${resource.filename}](${resourceUrl})`;
+    const resourceMarkdowns = resources.map((resource, index) => {
+      return `\n![${index}](${resource.externalLink})`;
     });
+    markdown += resourceMarkdowns.join(" ");
 
     return markdown;
   }
+
+  const filterList = useMemo(() => {
+    return (data || [])
+      .filter((item) => item.content.includes(debouncedSearchText))
+      .map((item) => {
+        item.markdown = getItemMarkdown(item);
+        return item;
+      });
+  }, [data, debouncedSearchText]);
 
   async function onArchive(item: MemoInfoResponse) {
     if (
@@ -64,7 +80,7 @@ export default function MemosListCommand(): JSX.Element {
         style: Toast.Style.Animated,
         title: "Archive...",
       });
-      const res = await archiveMemo(item.id).catch(() => {
+      const res = await archiveMemo(item.name).catch(() => {
         //
       });
 
@@ -93,7 +109,7 @@ export default function MemosListCommand(): JSX.Element {
         style: Toast.Style.Animated,
         title: "Delete...",
       });
-      const res = await deleteMemo(item.id).catch(() => {
+      const res = await deleteMemo(item.name).catch(() => {
         //
       });
 
@@ -122,7 +138,7 @@ export default function MemosListCommand(): JSX.Element {
         style: Toast.Style.Animated,
         title: "Restore...",
       });
-      const res = await restoreMemo(item.id).catch(() => {
+      const res = await restoreMemo(item.name).catch(() => {
         //
       });
 
@@ -137,15 +153,33 @@ export default function MemosListCommand(): JSX.Element {
   }
 
   const archiveComponent = (item: MemoInfoResponse) => (
-    <Action title="Archive" icon={Icon.Store} style={Action.Style.Destructive} onAction={() => onArchive(item)} />
+    <Action
+      title="Archive"
+      icon={Icon.Store}
+      style={Action.Style.Destructive}
+      onAction={() => onArchive(item)}
+      shortcut={{ modifiers: ["cmd"], key: "s" }}
+    />
   );
 
   const deleteComponent = (item: MemoInfoResponse) => (
-    <Action title="Delete" icon={Icon.Trash} style={Action.Style.Destructive} onAction={() => onDelete(item)} />
+    <Action
+      title="Delete"
+      icon={Icon.Trash}
+      style={Action.Style.Destructive}
+      onAction={() => onDelete(item)}
+      shortcut={{ modifiers: ["cmd"], key: "d" }}
+    />
   );
 
   const restoreComponent = (item: MemoInfoResponse) => (
-    <Action title="Restore" icon={Icon.Redo} style={Action.Style.Regular} onAction={() => onRestore(item)} />
+    <Action
+      title="Restore"
+      icon={Icon.Redo}
+      style={Action.Style.Regular}
+      onAction={() => onRestore(item)}
+      shortcut={{ modifiers: ["cmd"], key: "r" }}
+    />
   );
 
   return (
@@ -153,38 +187,73 @@ export default function MemosListCommand(): JSX.Element {
       isLoading={isLoading}
       filtering={false}
       onSearchTextChange={setSearchText}
+      searchText={searchText}
       navigationTitle="Search Memos"
       searchBarPlaceholder="Search your memo..."
       isShowingDetail
+      pagination={pagination}
       searchBarAccessory={
         <List.Dropdown
-          tooltip="Select Row Status"
-          storeValue={true}
+          tooltip="Dropdown With Items"
           onChange={(newValue) => {
-            onRowStatusChange(newValue as ROW_STATUS_KEY);
+            setState(newValue as ROW_STATUS);
           }}
         >
-          <List.Dropdown.Section title="Row Status">
-            {rowStatusList.map((status) => (
-              <List.Dropdown.Item key={status} title={status} value={status} />
-            ))}
-          </List.Dropdown.Section>
+          <List.Dropdown.Item title={ROW_STATUS.ALL} value={ROW_STATUS.ALL} />
+          <List.Dropdown.Item title={ROW_STATUS.NORMAL} value={ROW_STATUS.NORMAL} />
+          <List.Dropdown.Item title={ROW_STATUS.ARCHIVED} value={ROW_STATUS.ARCHIVED} />
         </List.Dropdown>
       }
     >
       {filterList.map((item) => (
         <List.Item
-          key={item.id}
+          key={item.name}
           title={item.content}
           actions={
             <ActionPanel>
               <Action.OpenInBrowser url={getItemUrl(item)} />
-              {(item.rowStatus === ROW_STATUS.NORMAL && archiveComponent(item)) || null}
+              <Action.CopyToClipboard title="Copy Content" content={item.markdown ?? ""} />
+              <Action.CopyToClipboard title="Copy URL" content={getItemUrl(item)} />
+              {(item.rowStatus !== ROW_STATUS.ARCHIVED && archiveComponent(item)) || null}
               {(item.rowStatus === ROW_STATUS.ARCHIVED && restoreComponent(item)) || null}
-              {(item.rowStatus === ROW_STATUS.ARCHIVED && deleteComponent(item)) || null}
+              {deleteComponent(item)}
             </ActionPanel>
           }
-          detail={<List.Item.Detail markdown={getItemMarkdown(item)} />}
+          detail={
+            <List.Item.Detail
+              markdown={item.markdown}
+              metadata={
+                <List.Item.Detail.Metadata>
+                  <List.Item.Detail.Metadata.TagList title="Pin">
+                    <List.Item.Detail.Metadata.TagList.Item
+                      text={item.pinned ? "True" : "False"}
+                      color={item.pinned ? "green" : "red"}
+                    />
+                  </List.Item.Detail.Metadata.TagList>
+                  <List.Item.Detail.Metadata.TagList title="Visibility">
+                    <List.Item.Detail.Metadata.TagList.Item
+                      text={item.visibility.toUpperCase()}
+                      color={item.visibility === "PUBLIC" ? "green" : "red"}
+                    />
+                  </List.Item.Detail.Metadata.TagList>
+                  <List.Item.Detail.Metadata.TagList title="Tags">
+                    {item.property.tags.map((tag) => (
+                      <List.Item.Detail.Metadata.TagList.Item text={tag} color="blue" />
+                    ))}
+                  </List.Item.Detail.Metadata.TagList>
+                  <List.Item.Detail.Metadata.Separator />
+                  <List.Item.Detail.Metadata.Label
+                    title="Create Time"
+                    text={new Date(item.createTime).toLocaleString()}
+                  />
+                  <List.Item.Detail.Metadata.Label
+                    title="Update Time"
+                    text={new Date(item.updateTime).toLocaleString()}
+                  />
+                </List.Item.Detail.Metadata>
+              }
+            />
+          }
         />
       ))}
     </List>
