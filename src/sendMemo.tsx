@@ -6,7 +6,7 @@ interface TodoArguments {
 }
 
 export default async function Command(props: LaunchProps<{ arguments: TodoArguments }>) {
-  const { text = "" } = props.arguments;
+  const text = props.arguments.text ?? props.fallbackText;
 
   showToast({
     style: Toast.Style.Animated,
